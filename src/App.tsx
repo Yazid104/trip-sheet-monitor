@@ -1,574 +1,875 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import { 
-  TripHeader, 
-  TripRow, 
-  Tubular, 
-  StringSection, 
-  TripMode, 
-  EventType, 
-  AlarmSeverity 
-} from './types/trip';
+  ArrowUpFromLine, 
+  ArrowDownToLine, 
+  Droplet, 
+  Droplets, 
+  Plus, 
+  Trash2, 
+  RotateCcw, 
+  AlertTriangle, 
+  CheckCircle2, 
+  FileSpreadsheet,
+  Layers,
+  Calculator,
+  RefreshCw
+} from 'lucide-react';
 import { INITIAL_TUBULARS } from './data/tubularDatabase';
-import { 
-  getDisplacementLPerM, 
-  calculateStepTheoreticalVolume, 
-  recalculateAllRows, 
-  evaluateAlarm 
-} from './utils/calculations';
-import { Header } from './components/Header';
-import { WellControlBanner } from './components/WellControlBanner';
-import { TripTankGauge } from './components/TripTankGauge';
-import { TripTable } from './components/TripTable';
-import { TripChart } from './components/TripChart';
-import { TripSetup } from './components/TripSetup';
-import { StringComposer } from './components/StringComposer';
-import { TubularCatalogModal } from './components/TubularCatalogModal';
-import { PrintSheet } from './components/PrintSheet';
+
+// Types
+type TripType = 'POOH_DRY' | 'POOH_WET' | 'RIH_DRY' | 'RIH_WET';
+
+interface StringItem {
+  id: string;
+  name: string;
+  category: string;
+  vAcierPerStand: number; // Litres per stand (28.5m)
+  vExtPerStand: number;   // Litres per stand (28.5m)
+  standsCount: number;
+}
+
+interface TripRow {
+  id: string;
+  stepNumber: number;
+  fromStand: number;
+  toStand: number;
+  standsCount: number;
+  stringItemId: string;
+  isVidange: boolean; // Vidange / Remplissage event
+  startTT: number;    // m³
+  endTT: number;      // m³
+  comment?: string;
+}
+
+const DEFAULT_STRING: StringItem[] = [
+  {
+    id: 's-dp-3.5',
+    name: 'DP 3½" S-135 (NC38)',
+    category: 'DP',
+    vAcierPerStand: 79.8,  // ~0.40 m³ for 5 stands
+    vExtPerStand: 190.1,   // ~0.95 m³ for 5 stands
+    standsCount: 80
+  },
+  {
+    id: 's-hwdp-3.5',
+    name: 'HWDP 3½" 25.3# (NC38)',
+    category: 'HWDP',
+    vAcierPerStand: 216.6,
+    vExtPerStand: 289.6,
+    standsCount: 15
+  },
+  {
+    id: 's-dc-4.75',
+    name: 'DC 4¾" (ID 2¼")',
+    category: 'DC',
+    vAcierPerStand: 250.8,
+    vExtPerStand: 323.8,
+    standsCount: 6
+  }
+];
 
 export default function App() {
-  // --- Tubulars Catalog ---
-  const [tubulars, setTubulars] = useState<Tubular[]>(INITIAL_TUBULARS);
+  // 1. Trip Mode State
+  const [tripType, setTripType] = useState<TripType>('POOH_DRY');
 
-  // --- Trip Header Configuration ---
-  const [header, setHeader] = useState<TripHeader>({
-    wellName: 'TRNW12Z',
-    rigName: 'RIG TP-228',
-    date: new Date().toISOString().split('T')[0],
-    time: '14:30',
-    shift: 'JOUR',
-    drillerName: 'M. Benali',
-    companyMan: 'K. Amrani',
-    drillingSupervisor: 'S. Belkacem',
-    mudDensity: 1.15,
-    standLength: 28.5,
-    tripTankCapacity: 5.0,
-    initialTripTankVolume: 3.50,
-    warningThresholdM3: 0.20,
-    criticalThresholdM3: 0.40,
-    currentDepth: 2450.0,
-    finalDepth: 0.0,
-    operationNotes: 'POOH pour changement outil de forage 6" (TRNW12Z)'
-  });
+  // 2. String Components State
+  const [stringItems, setStringItems] = useState<StringItem[]>(DEFAULT_STRING);
+  const [selectedCatalogId, setSelectedCatalogId] = useState<string>('dp-5-s135');
 
-  // --- String Composition ---
-  const [stringSections, setStringSections] = useState<StringSection[]>([
+  // Well & Rig basic info
+  const [wellName, setWellName] = useState('TRNW12Z');
+  const [rigName, setRigName] = useState('TP-228');
+
+  // 3. Trip Table Rows State
+  const [rows, setRows] = useState<TripRow[]>([
     {
-      id: 'sec-1',
-      tubularId: 'dp-3.5-s135',
-      tubularName: 'DP 3½" S-135 13.30# NC38',
-      numStands: 75,
-      lengthMeters: 75 * 28.5,
-      vAcierLPerM: 2.80,
-      vExtLPerM: 6.67,
-      vIntLPerM: 3.87
+      id: 'row-1',
+      stepNumber: 1,
+      fromStand: 1,
+      toStand: 5,
+      standsCount: 5,
+      stringItemId: 's-dp-3.5',
+      isVidange: false,
+      startTT: 4.80,
+      endTT: 4.41,
+      comment: 'Initial 5 stands'
     },
     {
-      id: 'sec-2',
-      tubularId: 'hwdp-3.5',
-      tubularName: 'HWDP 3½" 25.3# NC38',
-      numStands: 6,
-      lengthMeters: 6 * 28.5,
-      vAcierLPerM: 7.60,
-      vExtLPerM: 10.16,
-      vIntLPerM: 2.56
-    },
-    {
-      id: 'sec-3',
-      tubularId: 'dc-4.75',
-      tubularName: 'DC 4¾" (ID 2¼")',
-      numStands: 6,
-      lengthMeters: 6 * 28.5,
-      vAcierLPerM: 8.80,
-      vExtLPerM: 11.36,
-      vIntLPerM: 2.56
+      id: 'row-2',
+      stepNumber: 2,
+      fromStand: 6,
+      toStand: 10,
+      standsCount: 5,
+      stringItemId: 's-dp-3.5',
+      isVidange: false,
+      startTT: 4.41,
+      endTT: 4.02,
+      comment: ''
     }
   ]);
 
-  // Active operation mode and tubular
-  const [activeMode, setActiveMode] = useState<TripMode>('POOH_DRY');
-  const [activeTubular, setActiveTubular] = useState<Tubular>(
-    INITIAL_TUBULARS.find(t => t.id === 'dp-3.5-s135') || INITIAL_TUBULARS[0]
-  );
+  // Is mode Dry or Wet?
+  const isDry = tripType === 'POOH_DRY' || tripType === 'RIH_DRY';
+  const isPOOH = tripType === 'POOH_DRY' || tripType === 'POOH_WET';
 
-  // --- Trip Rows State ---
-  // Seed with realistic field data matching the user's paper sheet for POOH DP 3½" (0.40 m³ per 5 stands)
-  const [rows, setRows] = useState<TripRow[]>(() => {
-    const r1: TripRow = {
-      id: 'row-1',
-      timestamp: '14:35',
-      standNumber: 5,
-      standsInStep: 5,
-      depth: 2450 - (5 * 28.5),
-      tubularName: 'DP 3½" S-135 13.30# NC38',
-      mode: 'POOH_DRY',
-      vTheoriqueStepM3: 0.399, // 5 * 28.5 * 2.80 / 1000 = 0.399 m³
-      vTheoriqueCumulM3: 0.399,
-      tripTankReadingM3: 3.10, // Drop from 3.50 to 3.10 => Delta = 0.40 m³
-      tripTankDeltaM3: 0.40,
-      vReelCumulM3: 0.40,
-      ecartStepM3: -0.001,
-      ecartCumulM3: -0.001,
-      status: 'NORMAL',
-      event: 'NONE',
-      remarks: 'Début POOH à sec - Puits stable'
-    };
-    const r2: TripRow = {
-      id: 'row-2',
-      timestamp: '14:50',
-      standNumber: 10,
-      standsInStep: 5,
-      depth: 2450 - (10 * 28.5),
-      tubularName: 'DP 3½" S-135 13.30# NC38',
-      mode: 'POOH_DRY',
-      vTheoriqueStepM3: 0.399,
-      vTheoriqueCumulM3: 0.798,
-      tripTankReadingM3: 2.70, // Drop from 3.10 to 2.70 => Delta = 0.40 m³
-      tripTankDeltaM3: 0.40,
-      vReelCumulM3: 0.80,
-      ecartStepM3: -0.001,
-      ecartCumulM3: -0.002,
-      status: 'NORMAL',
-      event: 'NONE',
-      remarks: 'Normal'
-    };
-    const r3: TripRow = {
-      id: 'row-3',
-      timestamp: '15:05',
-      standNumber: 15,
-      standsInStep: 5,
-      depth: 2450 - (15 * 28.5),
-      tubularName: 'DP 3½" S-135 13.30# NC38',
-      mode: 'POOH_DRY',
-      vTheoriqueStepM3: 0.399,
-      vTheoriqueCumulM3: 1.197,
-      tripTankReadingM3: 2.31,
-      tripTankDeltaM3: 0.39,
-      vReelCumulM3: 1.19,
-      ecartStepM3: 0.009,
-      ecartCumulM3: 0.007,
-      status: 'NORMAL',
-      event: 'NONE',
-      remarks: 'Normal'
-    };
-    return [r1, r2, r3];
-  });
-
-  // Modals state
-  const [isSetupOpen, setIsSetupOpen] = useState(false);
-  const [isStringComposerOpen, setIsStringComposerOpen] = useState(false);
-  const [isTubularCatalogOpen, setIsTubularCatalogOpen] = useState(false);
-
-  // Recalculate whenever thresholds or initial TT change
-  const recompute = (newRows: TripRow[]) => {
-    return recalculateAllRows(
-      newRows,
-      header.initialTripTankVolume,
-      header.warningThresholdM3,
-      header.criticalThresholdM3
-    );
+  // Helper to get displacement in L/stand for a string component
+  const getDisplacementPerStand = (item: StringItem) => {
+    return isDry ? item.vAcierPerStand : item.vExtPerStand;
   };
 
-  // Current Trip Tank Reading (from last row, or initial)
-  const currentTTReading = rows.length > 0 
-    ? rows[rows.length - 1].tripTankReadingM3 
-    : header.initialTripTankVolume;
+  // Add component from catalog to string
+  const handleAddToString = () => {
+    const catalogItem = INITIAL_TUBULARS.find(t => t.id === selectedCatalogId);
+    if (!catalogItem) return;
 
-  const totalEcartCumulM3 = rows.length > 0 
-    ? rows[rows.length - 1].ecartCumulM3 
-    : 0;
+    const newItem: StringItem = {
+      id: `s-${Date.now()}`,
+      name: catalogItem.name,
+      category: catalogItem.category,
+      vAcierPerStand: catalogItem.vAcierPerStand || Number((catalogItem.vAcierLPerM * 28.5).toFixed(1)),
+      vExtPerStand: catalogItem.vExtPerStand || Number((catalogItem.vExtLPerM * 28.5).toFixed(1)),
+      standsCount: 10
+    };
+    setStringItems([...stringItems, newItem]);
+  };
 
-  const overallStatus = rows.length > 0 
-    ? rows[rows.length - 1].status 
-    : 'NORMAL';
+  const handleRemoveFromString = (id: string) => {
+    if (stringItems.length <= 1) return;
+    setStringItems(stringItems.filter(item => item.id !== id));
+  };
 
-  // --- Add Step Handler ---
-  const handleAddStep = (
-    standsCount: number,
-    eventType: EventType = 'NONE',
-    customTTReading?: number,
-    remarks: string = ''
-  ) => {
-    const prevRow = rows.length > 0 ? rows[rows.length - 1] : null;
-    const prevStands = prevRow ? prevRow.standNumber : 0;
-    const prevDepth = prevRow ? prevRow.depth : header.currentDepth;
-    const prevTT = prevRow ? prevRow.tripTankReadingM3 : header.initialTripTankVolume;
+  const handleUpdateStringItem = (id: string, field: 'vAcierPerStand' | 'vExtPerStand' | 'standsCount' | 'name', value: any) => {
+    setStringItems(stringItems.map(item => item.id === id ? { ...item, [field]: value } : item));
+  };
 
-    const unitLPerM = getDisplacementLPerM(activeTubular, activeMode);
-    const { volumeM3: theoStepM3 } = calculateStepTheoreticalVolume(
-      unitLPerM,
-      standsCount,
-      header.standLength
-    );
-
-    const isPOOH = activeMode.startsWith('POOH');
-    const newStands = prevStands + standsCount;
-    const stepDepthM = standsCount * header.standLength;
-    const newDepth = isPOOH 
-      ? Math.max(prevDepth - stepDepthM, 0)
-      : prevDepth + stepDepthM;
-
-    // Estimate expected TT reading if not entered manually
-    let targetTT = customTTReading;
-    if (targetTT === undefined || isNaN(targetTT)) {
-      if (isPOOH) {
-        targetTT = Number(Math.max(prevTT - theoStepM3, 0).toFixed(3));
-      } else {
-        targetTT = Number(Math.min(prevTT + theoStepM3, header.tripTankCapacity).toFixed(3));
-      }
-    }
+  // Add next row in table
+  const handleAddRow = () => {
+    const lastRow = rows[rows.length - 1];
+    const nextStep = lastRow ? lastRow.stepNumber + 1 : 1;
+    const nextFrom = lastRow ? (lastRow.isVidange ? lastRow.toStand : lastRow.toStand + 1) : 1;
+    const defaultStands = 5;
+    const nextTo = nextFrom + defaultStands - 1;
+    const startTT = lastRow ? lastRow.endTT : 5.0;
+    const defaultStringId = stringItems[0]?.id || '';
 
     const newRow: TripRow = {
       id: `row-${Date.now()}`,
-      timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-      standNumber: newStands,
-      standsInStep: standsCount,
-      depth: Number(newDepth.toFixed(1)),
-      tubularName: activeTubular.name,
-      mode: activeMode,
-      vTheoriqueStepM3: theoStepM3,
-      vTheoriqueCumulM3: 0,
-      tripTankReadingM3: targetTT,
-      tripTankDeltaM3: 0,
-      vReelCumulM3: 0,
-      ecartStepM3: 0,
-      ecartCumulM3: 0,
-      status: 'NORMAL',
-      event: eventType,
-      remarks: remarks || (eventType !== 'NONE' ? eventType : 'Normal')
+      stepNumber: nextStep,
+      fromStand: nextFrom,
+      toStand: nextTo,
+      standsCount: defaultStands,
+      stringItemId: lastRow ? lastRow.stringItemId : defaultStringId,
+      isVidange: false,
+      startTT: startTT,
+      endTT: startTT, // will be typed by user
+      comment: ''
     };
-
-    const updated = recompute([...rows, newRow]);
-    setRows(updated);
+    setRows([...rows, newRow]);
   };
 
-  // --- Inline Edit TT Reading ---
-  const handleUpdateRowTT = (rowId: string, newTTValue: number) => {
-    const updated = rows.map(r => r.id === rowId ? { ...r, tripTankReadingM3: newTTValue } : r);
-    setRows(recompute(updated));
-  };
+  // Add Vidange / Remplissage TT event row
+  const handleAddVidange = () => {
+    const lastRow = rows[rows.length - 1];
+    const nextStep = lastRow ? lastRow.stepNumber + 1 : 1;
+    const currentStand = lastRow ? lastRow.toStand : 0;
+    const prevEnd = lastRow ? lastRow.endTT : 0;
 
-  // --- Inline Edit Remark ---
-  const handleUpdateRowRemark = (rowId: string, remark: string) => {
-    setRows(rows.map(r => r.id === rowId ? { ...r, remarks: remark } : r));
-  };
-
-  // --- Delete Row ---
-  const handleDeleteRow = (rowId: string) => {
-    const remaining = rows.filter(r => r.id !== rowId);
-    setRows(recompute(remaining));
-  };
-
-  // --- Quick Tank Events ---
-  const handleQuickVidange = () => {
-    const newLevel = 1.20; // typical drained level in m³
-    const prevRow = rows.length > 0 ? rows[rows.length - 1] : null;
-    const prevStands = prevRow ? prevRow.standNumber : 0;
-    const prevDepth = prevRow ? prevRow.depth : header.currentDepth;
-
-    const eventRow: TripRow = {
-      id: `event-${Date.now()}`,
-      timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-      standNumber: prevStands,
-      standsInStep: 0,
-      depth: prevDepth,
-      tubularName: activeTubular.name,
-      mode: activeMode,
-      vTheoriqueStepM3: 0,
-      vTheoriqueCumulM3: 0,
-      tripTankReadingM3: newLevel,
-      tripTankDeltaM3: 0,
-      vReelCumulM3: 0,
-      ecartStepM3: 0,
-      ecartCumulM3: 0,
-      status: 'NORMAL',
-      event: 'VIDANGE_TT',
-      remarks: `Vidange TT vers bac actif (Nouveau niveau: ${newLevel} m³)`
+    const newRow: TripRow = {
+      id: `row-${Date.now()}`,
+      stepNumber: nextStep,
+      fromStand: currentStand,
+      toStand: currentStand,
+      standsCount: 0,
+      stringItemId: lastRow ? lastRow.stringItemId : (stringItems[0]?.id || ''),
+      isVidange: true,
+      startTT: prevEnd,
+      endTT: 5.0, // newly refilled or drained level
+      comment: 'Vidange / Remplissage TT'
     };
-
-    setRows(recompute([...rows, eventRow]));
+    setRows([...rows, newRow]);
   };
 
-  const handleQuickRemplissage = () => {
-    const newLevel = 4.20; // typical refilled level in m³
-    const prevRow = rows.length > 0 ? rows[rows.length - 1] : null;
-    const prevStands = prevRow ? prevRow.standNumber : 0;
-    const prevDepth = prevRow ? prevRow.depth : header.currentDepth;
-
-    const eventRow: TripRow = {
-      id: `event-${Date.now()}`,
-      timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-      standNumber: prevStands,
-      standsInStep: 0,
-      depth: prevDepth,
-      tubularName: activeTubular.name,
-      mode: activeMode,
-      vTheoriqueStepM3: 0,
-      vTheoriqueCumulM3: 0,
-      tripTankReadingM3: newLevel,
-      tripTankDeltaM3: 0,
-      vReelCumulM3: 0,
-      ecartStepM3: 0,
-      ecartCumulM3: 0,
-      status: 'NORMAL',
-      event: 'REMPLISSAGE_TT',
-      remarks: `Remplissage TT depuis bac actif (Nouveau niveau: ${newLevel} m³)`
-    };
-
-    setRows(recompute([...rows, eventRow]));
+  const handleUpdateRow = (id: string, field: keyof TripRow, value: any) => {
+    setRows(rows.map(row => {
+      if (row.id !== id) return row;
+      const updated = { ...row, [field]: value };
+      if (field === 'fromStand' || field === 'toStand') {
+        const from = field === 'fromStand' ? Number(value) : row.fromStand;
+        const to = field === 'toStand' ? Number(value) : row.toStand;
+        updated.standsCount = Math.max(0, to - from + 1);
+      } else if (field === 'standsCount') {
+        updated.toStand = updated.fromStand + Math.max(0, Number(value)) - 1;
+      }
+      return updated;
+    }));
   };
 
-  const handleLogFlowCheck = (result: string) => {
-    const prevRow = rows.length > 0 ? rows[rows.length - 1] : null;
-    const prevStands = prevRow ? prevRow.standNumber : 0;
-    const prevDepth = prevRow ? prevRow.depth : header.currentDepth;
-    const prevTT = prevRow ? prevRow.tripTankReadingM3 : header.initialTripTankVolume;
-
-    const eventRow: TripRow = {
-      id: `fc-${Date.now()}`,
-      timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-      standNumber: prevStands,
-      standsInStep: 0,
-      depth: prevDepth,
-      tubularName: activeTubular.name,
-      mode: activeMode,
-      vTheoriqueStepM3: 0,
-      vTheoriqueCumulM3: 0,
-      tripTankReadingM3: prevTT,
-      tripTankDeltaM3: 0,
-      vReelCumulM3: 0,
-      ecartStepM3: 0,
-      ecartCumulM3: 0,
-      status: 'NORMAL',
-      event: 'FLOW_CHECK',
-      remarks: `FLOW CHECK 15 MIN : ${result}`
-    };
-
-    setRows(recompute([...rows, eventRow]));
+  const handleDeleteRow = (id: string) => {
+    if (rows.length <= 1) return;
+    setRows(rows.filter(r => r.id !== id));
   };
 
-  // --- Export CSV ---
-  const handleExportCSV = () => {
-    const headers = [
-      'N_Stand',
-      'Stands_In_Step',
-      'Depth_m',
-      'Tubular',
-      'Mode',
-      'V_Theorique_Step_m3',
-      'V_Theorique_Cumul_m3',
-      'TT_Reading_m3',
-      'V_Reel_Delta_m3',
-      'Ecart_Step_m3',
-      'Ecart_Cumul_m3',
-      'Status',
-      'Event',
-      'Remarks',
-      'Timestamp'
-    ];
-
-    const lines = rows.map(r => [
-      r.standNumber,
-      r.standsInStep,
-      r.depth,
-      `"${r.tubularName}"`,
-      r.mode,
-      r.vTheoriqueStepM3,
-      r.vTheoriqueCumulM3,
-      r.tripTankReadingM3,
-      r.tripTankDeltaM3,
-      r.ecartStepM3,
-      r.ecartCumulM3,
-      r.status,
-      r.event,
-      `"${r.remarks.replace(/"/g, '""')}"`,
-      r.timestamp
-    ].join(','));
-
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...lines].join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `TripSheet_${header.wellName || 'TRNW12Z'}_${header.date}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  const handlePrint = () => {
-    window.print();
-  };
-
-  const handleReset = () => {
-    if (window.confirm('Voulez-vous vraiment réinitialiser toutes les données de la manœuvre en cours ?')) {
-      setRows([]);
+  const handleResetData = () => {
+    if (window.confirm('هل تريد مسح بيانات الجدول والبدء من جديد؟')) {
+      setRows([
+        {
+          id: 'row-1',
+          stepNumber: 1,
+          fromStand: 1,
+          toStand: 5,
+          standsCount: 5,
+          stringItemId: stringItems[0]?.id || '',
+          isVidange: false,
+          startTT: 5.0,
+          endTT: 5.0,
+          comment: ''
+        }
+      ]);
     }
   };
 
-  const isPOOH = activeMode.startsWith('POOH');
+  // Calculated Table Data
+  const calculatedRows = useMemo(() => {
+    let cumTheo = 0;
+    let cumReal = 0;
+
+    return rows.map((row) => {
+      if (row.isVidange) {
+        // Vidange TT resets reference tank gauge, zero displacement for well
+        return {
+          ...row,
+          dispPerStandL: 0,
+          theoM3: 0,
+          realM3: 0,
+          diffM3: 0,
+          cumTheoM3: cumTheo,
+          cumRealM3: cumReal,
+          cumDiffM3: cumReal - cumTheo,
+          status: 'info'
+        };
+      }
+
+      const stringItem = stringItems.find(s => s.id === row.stringItemId) || stringItems[0];
+      const dispPerStandL = stringItem ? getDisplacementPerStand(stringItem) : 0;
+      
+      // Theoretical Volume in m³ = (Stands * L/stand) / 1000
+      const theoM3 = Number(((row.standsCount * dispPerStandL) / 1000).toFixed(3));
+
+      // Real Volume in m³:
+      // In POOH (Pull out of hole): Rig pump fills hole, TT gauge decreases: Real = startTT - endTT
+      // In RIH (Run into hole): Pipe displaces mud to TT, TT gauge increases: Real = endTT - startTT
+      const rawDelta = isPOOH ? (row.startTT - row.endTT) : (row.endTT - row.startTT);
+      const realM3 = Number(rawDelta.toFixed(3));
+
+      // Difference:
+      // In POOH: If Real < Theo => Hole took less mud than expected => Possible Kick / Influx!
+      //          If Real > Theo => Hole took more mud than expected => Losses!
+      // In RIH:  If Real > Theo => TT gained more mud than pipe volume => Possible Kick / Influx!
+      //          If Real < Theo => TT gained less mud than pipe volume => Losses!
+      const diffM3 = Number((realM3 - theoM3).toFixed(3));
+
+      cumTheo = Number((cumTheo + theoM3).toFixed(3));
+      cumReal = Number((cumReal + realM3).toFixed(3));
+      const cumDiffM3 = Number((cumReal - cumTheo).toFixed(3));
+
+      // Well control status check: threshold 0.15 m³ (~1 bbl)
+      let status: 'normal' | 'kick' | 'loss' = 'normal';
+      const tolerance = 0.15;
+      
+      if (isPOOH) {
+        if (diffM3 < -tolerance) status = 'kick'; // took less mud => influx pushed mud
+        else if (diffM3 > tolerance) status = 'loss'; // took more mud => losses
+      } else {
+        // RIH
+        if (diffM3 > tolerance) status = 'kick'; // displaced too much => influx
+        else if (diffM3 < -tolerance) status = 'loss'; // displaced too little => mud lost to formation
+      }
+
+      return {
+        ...row,
+        dispPerStandL,
+        theoM3,
+        realM3,
+        diffM3,
+        cumTheoM3: cumTheo,
+        cumRealM3: cumReal,
+        cumDiffM3,
+        status
+      };
+    });
+  }, [rows, stringItems, isDry, isPOOH]);
+
+  // Overall Summary
+  const summary = useMemo(() => {
+    const nonVidangeRows = calculatedRows.filter(r => !r.isVidange);
+    const lastRow = calculatedRows[calculatedRows.length - 1];
+    const totalTheo = lastRow?.cumTheoM3 || 0;
+    const totalReal = lastRow?.cumRealM3 || 0;
+    const totalDiff = lastRow?.cumDiffM3 || 0;
+    const totalStands = nonVidangeRows.reduce((sum, r) => sum + r.standsCount, 0);
+
+    const hasKickAlert = calculatedRows.some(r => r.status === 'kick');
+    const hasLossAlert = calculatedRows.some(r => r.status === 'loss');
+
+    return {
+      totalTheo,
+      totalReal,
+      totalDiff,
+      totalStands,
+      hasKickAlert,
+      hasLossAlert
+    };
+  }, [calculatedRows]);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
-      
-      {/* Interactive App Screen */}
-      <div className="print:hidden flex flex-col min-h-screen">
-        
-        {/* Top Navbar */}
-        <Header
-          header={header}
-          overallStatus={overallStatus}
-          totalEcartCumulM3={totalEcartCumulM3}
-          currentTTReading={currentTTReading}
-          onOpenSetup={() => setIsSetupOpen(true)}
-          onOpenStringComposer={() => setIsStringComposerOpen(true)}
-          onOpenTubularCatalog={() => setIsTubularCatalogOpen(true)}
-          onPrint={handlePrint}
-          onExportCSV={handleExportCSV}
-          onReset={handleReset}
-        />
+    <div className="min-h-screen bg-slate-100 text-slate-800 p-3 md:p-6 font-sans">
+      <div className="max-w-7xl mx-auto space-y-6">
 
-        {/* Main Content Body */}
-        <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 space-y-5">
-          
-          {/* Well Control Warning / Kick Alert Banner */}
-          <WellControlBanner
-            status={overallStatus}
-            totalEcartCumulM3={totalEcartCumulM3}
-            warningThresholdM3={header.warningThresholdM3}
-            criticalThresholdM3={header.criticalThresholdM3}
-            onLogFlowCheck={handleLogFlowCheck}
-          />
-
-          {/* Top Info Grid: Trip Tank Gauge + Quick Rig Info */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-            {/* Visual Tank Gauge */}
-            <div className="lg:col-span-1">
-              <TripTankGauge
-                currentVolumeM3={currentTTReading}
-                initialVolumeM3={header.initialTripTankVolume}
-                capacityM3={header.tripTankCapacity}
-                isPOOH={isPOOH}
-                onQuickVidange={handleQuickVidange}
-                onQuickRemplissage={handleQuickRemplissage}
-              />
+        {/* --- HEADER --- */}
+        <header className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-col md:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-blue-600 text-white rounded-lg shadow-sm">
+              <Calculator className="w-6 h-6" />
             </div>
-
-            {/* Quick Summary Cards */}
-            <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between">
-                <span className="text-xs text-slate-400 font-mono">Longueurs Manœuvrées</span>
-                <div className="text-2xl font-bold font-mono text-white mt-2">
-                  {rows.length > 0 ? rows[rows.length - 1].standNumber : 0} <span className="text-xs font-normal text-slate-400">stands</span>
-                </div>
-                <span className="text-[11px] text-slate-500 font-mono">
-                  Prof: {rows.length > 0 ? rows[rows.length - 1].depth : header.currentDepth} m
+            <div>
+              <h1 className="text-xl md:text-2xl font-bold text-slate-900 flex items-center gap-2">
+                Trip Tank Monitor
+                <span className="text-xs px-2.5 py-0.5 bg-blue-100 text-blue-800 font-semibold rounded-full border border-blue-200">
+                  Contrôle des volumes
                 </span>
-              </div>
-
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between">
-                <span className="text-xs text-slate-400 font-mono">Vol. Théorique Cumulé</span>
-                <div className="text-2xl font-bold font-mono text-sky-400 mt-2">
-                  {rows.length > 0 ? rows[rows.length - 1].vTheoriqueCumulM3.toFixed(3) : '0.000'} <span className="text-xs font-normal text-slate-400">m³</span>
-                </div>
-                <span className="text-[11px] text-slate-500 font-mono">
-                  {(rows.length > 0 ? rows[rows.length - 1].vTheoriqueCumulM3 * 1000 : 0).toFixed(0)} Litres
-                </span>
-              </div>
-
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between">
-                <span className="text-xs text-slate-400 font-mono">Vol. Réel Déplacé</span>
-                <div className="text-2xl font-bold font-mono text-amber-400 mt-2">
-                  {rows.length > 0 ? rows[rows.length - 1].vReelCumulM3.toFixed(3) : '0.000'} <span className="text-xs font-normal text-slate-400">m³</span>
-                </div>
-                <span className="text-[11px] text-slate-500 font-mono">
-                  {(rows.length > 0 ? rows[rows.length - 1].vReelCumulM3 * 1000 : 0).toFixed(0)} Litres
-                </span>
-              </div>
-
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between">
-                <span className="text-xs text-slate-400 font-mono">Écart Cumulé Net</span>
-                <div className={`text-2xl font-bold font-mono mt-2 ${
-                  totalEcartCumulM3 >= header.warningThresholdM3 
-                    ? 'text-rose-400' 
-                    : totalEcartCumulM3 <= -header.warningThresholdM3 
-                      ? 'text-amber-400' 
-                      : 'text-emerald-400'
-                }`}>
-                  {totalEcartCumulM3 >= 0 ? `+${totalEcartCumulM3.toFixed(3)}` : totalEcartCumulM3.toFixed(3)} <span className="text-xs font-normal text-slate-400">m³</span>
-                </div>
-                <span className="text-[11px] text-slate-500 font-mono">
-                  {(totalEcartCumulM3 * 1000).toFixed(0)} L ({totalEcartCumulM3 >= 0 ? 'Gain' : 'Perte'})
-                </span>
-              </div>
+              </h1>
+              <p className="text-xs md:text-sm text-slate-500">
+                حسابات إزاحة خزان الرحلات الفورية • Rig: <span className="font-semibold text-slate-700">{rigName}</span> | Well: <span className="font-semibold text-slate-700">{wellName}</span>
+              </p>
             </div>
           </div>
 
-          {/* Core Interactive Trip Table */}
-          <TripTable
-            rows={rows}
-            activeMode={activeMode}
-            activeTubular={activeTubular}
-            tubulars={tubulars}
-            standLength={header.standLength}
-            currentTTLevel={currentTTReading}
-            onModeChange={setActiveMode}
-            onTubularChange={setActiveTubular}
-            onAddStep={handleAddStep}
-            onUpdateRowTT={handleUpdateRowTT}
-            onUpdateRowRemark={handleUpdateRowRemark}
-            onDeleteRow={handleDeleteRow}
-            onQuickVidange={handleQuickVidange}
-            onQuickRemplissage={handleQuickRemplissage}
-          />
+          <div className="flex items-center gap-2">
+            <input 
+              type="text" 
+              value={wellName} 
+              onChange={e => setWellName(e.target.value)}
+              placeholder="Well name"
+              className="text-xs bg-slate-50 border border-slate-300 rounded px-2 py-1.5 w-24 text-center font-medium"
+              title="اسم البئر"
+            />
+            <input 
+              type="text" 
+              value={rigName} 
+              onChange={e => setRigName(e.target.value)}
+              placeholder="Rig"
+              className="text-xs bg-slate-50 border border-slate-300 rounded px-2 py-1.5 w-20 text-center font-medium"
+              title="اسم الحفارة"
+            />
+            <button 
+              onClick={handleResetData}
+              className="flex items-center gap-1 text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded transition"
+              title="مسح وتصفير الجدول"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              تصفير
+            </button>
+          </div>
+        </header>
 
-          {/* Interactive Volume & Well Control Charts */}
-          <TripChart
-            rows={rows}
-            warningThresholdM3={header.warningThresholdM3}
-            criticalThresholdM3={header.criticalThresholdM3}
-          />
+        {/* --- SECTION 1: TRIP TYPE (أنواع الـ TRIP) --- */}
+        <section className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-blue-600"></span>
+              1. نوع الرحلة (Mode de manœuvre)
+            </h2>
+            <span className="text-xs text-slate-500 font-medium">
+              القاعدة المعتمدة: {isDry ? 'حجم الفولاذ (V_acier)' : 'الحجم الخارجي الكامل (V_ext)'}
+            </span>
+          </div>
 
-        </main>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {/* POOH DRY */}
+            <button
+              onClick={() => setTripType('POOH_DRY')}
+              className={`p-3.5 rounded-xl border-2 text-left transition relative flex flex-col justify-between ${
+                tripType === 'POOH_DRY'
+                  ? 'border-blue-600 bg-blue-50/70 shadow-sm'
+                  : 'border-slate-200 hover:border-slate-300 bg-white'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-base text-slate-900 flex items-center gap-1.5">
+                  <ArrowUpFromLine className="w-4 h-4 text-blue-600" />
+                  POOH Dry
+                </span>
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">
+                  سحب جاف
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-2">
+                أنبوب فارغ / مفتوح • إزاحة: <strong className="text-slate-700">V_acier</strong>
+              </p>
+              <p className="text-[11px] text-blue-700 font-medium mt-1">
+                الخزان ينقص لملء البئر
+              </p>
+            </button>
 
-        {/* Footer */}
-        <footer className="border-t border-slate-800 bg-slate-900/50 py-4 text-center text-xs text-slate-500 font-mono">
-          Rig TP-228 • Puits TRNW12Z • Contrôle des Volumes en Manœuvres (Trip Tank & Well Control System)
-        </footer>
+            {/* POOH WET */}
+            <button
+              onClick={() => setTripType('POOH_WET')}
+              className={`p-3.5 rounded-xl border-2 text-left transition relative flex flex-col justify-between ${
+                tripType === 'POOH_WET'
+                  ? 'border-blue-600 bg-blue-50/70 shadow-sm'
+                  : 'border-slate-200 hover:border-slate-300 bg-white'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-base text-slate-900 flex items-center gap-1.5">
+                  <ArrowUpFromLine className="w-4 h-4 text-indigo-600" />
+                  POOH Wet
+                </span>
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-800">
+                  سحب رطب
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-2">
+                أنبوب مملوء / مغلق • إزاحة: <strong className="text-slate-700">V_ext</strong>
+              </p>
+              <p className="text-[11px] text-indigo-700 font-medium mt-1">
+                الخزان ينقص بكامل حجم الأنبوب
+              </p>
+            </button>
+
+            {/* RIH DRY */}
+            <button
+              onClick={() => setTripType('RIH_DRY')}
+              className={`p-3.5 rounded-xl border-2 text-left transition relative flex flex-col justify-between ${
+                tripType === 'RIH_DRY'
+                  ? 'border-emerald-600 bg-emerald-50/70 shadow-sm'
+                  : 'border-slate-200 hover:border-slate-300 bg-white'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-base text-slate-900 flex items-center gap-1.5">
+                  <ArrowDownToLine className="w-4 h-4 text-emerald-600" />
+                  RIH Dry / Open
+                </span>
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
+                  إنزال مفتوح
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-2">
+                يدخل الطين داخل الأنبوب • إزاحة: <strong className="text-slate-700">V_acier</strong>
+              </p>
+              <p className="text-[11px] text-emerald-700 font-medium mt-1">
+                الخزان يمتلئ بحجم الفولاذ فقط
+              </p>
+            </button>
+
+            {/* RIH WET */}
+            <button
+              onClick={() => setTripType('RIH_WET')}
+              className={`p-3.5 rounded-xl border-2 text-left transition relative flex flex-col justify-between ${
+                tripType === 'RIH_WET'
+                  ? 'border-emerald-600 bg-emerald-50/70 shadow-sm'
+                  : 'border-slate-200 hover:border-slate-300 bg-white'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-base text-slate-900 flex items-center gap-1.5">
+                  <ArrowDownToLine className="w-4 h-4 text-teal-600" />
+                  RIH Wet / Closed
+                </span>
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-teal-100 text-teal-800">
+                  إنزال مغلق
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-2">
+                صمام مغلق / منع دخول • إزاحة: <strong className="text-slate-700">V_ext</strong>
+              </p>
+              <p className="text-[11px] text-teal-700 font-medium mt-1">
+                الخزان يمتلئ بكامل حجم الأنبوب
+              </p>
+            </button>
+          </div>
+        </section>
+
+        {/* --- SECTION 2: STRING COMPONENTS (أجزاء السترينغ) --- */}
+        <section className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+            <h2 className="text-sm font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
+              <Layers className="w-4 h-4 text-blue-600" />
+              2. أجزاء السترينغ المستخدمة (Composition de la garniture)
+            </h2>
+            <div className="flex items-center gap-2">
+              <select
+                value={selectedCatalogId}
+                onChange={e => setSelectedCatalogId(e.target.value)}
+                className="text-xs bg-slate-50 border border-slate-300 rounded px-2.5 py-1.5 font-medium max-w-[220px]"
+              >
+                {INITIAL_TUBULARS.map(t => (
+                  <option key={t.id} value={t.id}>
+                    + إضافة: {t.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={handleAddToString}
+                className="text-xs bg-blue-600 hover:bg-blue-700 text-white font-medium px-3 py-1.5 rounded flex items-center gap-1 transition"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                إضافة للسترينغ
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {stringItems.map((item, idx) => {
+              const activeDispL = getDisplacementPerStand(item);
+              const fiveStandsM3 = ((activeDispL * 5) / 1000).toFixed(2);
+
+              return (
+                <div 
+                  key={item.id} 
+                  className="p-3 bg-slate-50 rounded-lg border border-slate-200 relative flex flex-col justify-between"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-slate-200 text-slate-700">
+                        #{idx + 1} • {item.category}
+                      </span>
+                      <h3 className="font-semibold text-sm text-slate-900 mt-1">{item.name}</h3>
+                    </div>
+                    {stringItems.length > 1 && (
+                      <button
+                        onClick={() => handleRemoveFromString(item.id)}
+                        className="text-slate-400 hover:text-red-500 p-1"
+                        title="حذف هذا الجزء"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="mt-3 pt-2 border-t border-slate-200 grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <span className="text-slate-500 block text-[11px]">الإزاحة الحالية:</span>
+                      <span className="font-bold text-blue-700 text-sm">
+                        {activeDispL} <span className="text-[10px] text-slate-500 font-normal">L/std</span>
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[11px]">لكل 5 ستاندات:</span>
+                      <span className="font-bold text-slate-800 text-sm">
+                        {fiveStandsM3} <span className="text-[10px] text-slate-500 font-normal">m³</span>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="mt-2 text-[10px] text-slate-400 flex justify-between">
+                    <span>Dry (Acier): {item.vAcierPerStand} L/std</span>
+                    <span>Wet (Ext): {item.vExtPerStand} L/std</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* --- SECTION 3: AUTOMATIC CALCULATION TABLE (جدول الحساب الأوتوماتيكي) --- */}
+        <section className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+          
+          {/* Table Header Controls */}
+          <div className="p-4 bg-slate-50/80 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-bold uppercase tracking-wider text-slate-800 flex items-center gap-2">
+                <Calculator className="w-4 h-4 text-blue-600" />
+                3. جدول الحساب الأوتوماتيكي (Feuille de manœuvre)
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                أدخل قراءات الخزان (Début / Fin) ويتم حساب النظري والفعلي والفارق فورياً
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleAddRow}
+                className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3.5 py-2 rounded-lg flex items-center gap-1.5 shadow-sm transition"
+              >
+                <Plus className="w-4 h-4" />
+                + إضافة 5 ستاندات
+              </button>
+              <button
+                onClick={handleAddVidange}
+                className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 shadow-sm transition"
+                title="تسجيل تفريغ أو تعبئة خزان الرحلات لإعادة تعيين خط الأساس"
+              >
+                <RefreshCw className="w-4 h-4" />
+                تفريغ الخزان (Vidange TT)
+              </button>
+            </div>
+          </div>
+
+          {/* Alert Banner if kick or loss detected */}
+          {summary.hasKickAlert && (
+            <div className="bg-red-50 border-b border-red-200 px-4 py-2.5 flex items-center gap-2 text-red-800 text-xs font-medium">
+              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+              <span><strong>تنبيه أمان (Kick / Influx):</strong> يوجد فارق يظهر زيادة غير متوقعة في حجم الطين. تحقق من البئر فوراً وأوقف الرحلة إن لزم الأمر (Flow Check).</span>
+            </div>
+          )}
+          {summary.hasLossAlert && (
+            <div className="bg-amber-50 border-b border-amber-200 px-4 py-2.5 flex items-center gap-2 text-amber-800 text-xs font-medium">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span><strong>تنبيه فقدان (Losses):</strong> يوجد فارق يظهر نقصاً في الطين الراجع أو استهلاكاً أكبر من النظري. راقب الضغوط ومستوى الخزان.</span>
+            </div>
+          )}
+
+          {/* Table */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 uppercase text-[11px]">
+                  <th className="py-3 px-3 text-center w-12">#</th>
+                  <th className="py-3 px-3 w-40">المقطع (String)</th>
+                  <th className="py-3 px-3 text-center w-28">الستاندات (Stands)</th>
+                  <th className="py-3 px-3 text-right bg-blue-50/50 text-blue-900 w-32">
+                    النظري (Théo)
+                    <span className="block text-[9px] font-normal text-blue-600">m³</span>
+                  </th>
+                  <th className="py-3 px-3 text-center bg-slate-50 w-28">
+                    خزان بداية
+                    <span className="block text-[9px] font-normal text-slate-500">m³ Début</span>
+                  </th>
+                  <th className="py-3 px-3 text-center bg-slate-50 w-28">
+                    خزان نهاية
+                    <span className="block text-[9px] font-normal text-slate-500">m³ Fin</span>
+                  </th>
+                  <th className="py-3 px-3 text-right bg-slate-50 font-bold text-slate-900 w-28">
+                    الفعلي (Réel)
+                    <span className="block text-[9px] font-normal text-slate-500">m³</span>
+                  </th>
+                  <th className="py-3 px-3 text-right w-28">
+                    الفرق (Diff)
+                    <span className="block text-[9px] font-normal text-slate-500">Réel - Théo</span>
+                  </th>
+                  <th className="py-3 px-3 text-right bg-slate-100 text-slate-800 w-32">
+                    التراكمي (Cumulé)
+                    <span className="block text-[9px] font-normal text-slate-500">Cumulé Diff</span>
+                  </th>
+                  <th className="py-3 px-3 text-center w-24">الحالة</th>
+                  <th className="py-3 px-2 text-center w-10"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {calculatedRows.map((row, idx) => {
+                  if (row.isVidange) {
+                    return (
+                      <tr key={row.id} className="bg-amber-50/70 font-medium text-amber-900">
+                        <td className="py-2.5 px-3 text-center font-bold">{row.stepNumber}</td>
+                        <td colSpan={3} className="py-2.5 px-3">
+                          <div className="flex items-center gap-2">
+                            <span className="px-2 py-0.5 rounded bg-amber-200 text-amber-800 text-[10px] font-bold">
+                              VIDANGE / REMPLISSAGE
+                            </span>
+                            <span className="text-xs">إعادة ضبط مستوى خزان الرحلات</span>
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span className="text-xs text-slate-500 line-through">{row.startTT} m³</span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <input 
+                            type="number" 
+                            step="0.01"
+                            value={row.endTT}
+                            onChange={e => handleUpdateRow(row.id, 'endTT', Number(e.target.value))}
+                            className="w-20 text-center font-bold bg-white border border-amber-300 rounded px-1.5 py-1 text-xs"
+                            title="المستوى الجديد بعد التعبئة/التفريغ"
+                          />
+                        </td>
+                        <td className="py-2.5 px-3 text-right text-slate-400">—</td>
+                        <td className="py-2.5 px-3 text-right text-slate-400">—</td>
+                        <td className="py-2.5 px-3 text-right font-semibold text-slate-700">
+                          {row.cumDiffM3 > 0 ? `+${row.cumDiffM3}` : row.cumDiffM3} m³
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-800">
+                            ضبط المرجع
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-2 text-center">
+                          <button 
+                            onClick={() => handleDeleteRow(row.id)}
+                            className="text-slate-400 hover:text-red-600 p-1"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  }
+
+                  return (
+                    <tr key={row.id} className="hover:bg-slate-50/80 transition">
+                      {/* Step Number */}
+                      <td className="py-2.5 px-3 text-center font-semibold text-slate-600">
+                        {row.stepNumber}
+                      </td>
+
+                      {/* String Item Select */}
+                      <td className="py-2.5 px-3">
+                        <select
+                          value={row.stringItemId}
+                          onChange={e => handleUpdateRow(row.id, 'stringItemId', e.target.value)}
+                          className="w-full bg-transparent font-medium text-slate-800 border-0 focus:ring-1 focus:ring-blue-500 rounded p-1 text-xs"
+                        >
+                          {stringItems.map(s => (
+                            <option key={s.id} value={s.id}>{s.name}</option>
+                          ))}
+                        </select>
+                      </td>
+
+                      {/* Stands (From - To) */}
+                      <td className="py-2.5 px-3 text-center">
+                        <div className="flex items-center justify-center gap-1 font-mono">
+                          <input 
+                            type="number"
+                            value={row.fromStand}
+                            onChange={e => handleUpdateRow(row.id, 'fromStand', Number(e.target.value))}
+                            className="w-10 text-center bg-slate-50 border border-slate-200 rounded py-0.5 text-xs font-semibold"
+                          />
+                          <span className="text-slate-400">-</span>
+                          <input 
+                            type="number"
+                            value={row.toStand}
+                            onChange={e => handleUpdateRow(row.id, 'toStand', Number(e.target.value))}
+                            className="w-10 text-center bg-slate-50 border border-slate-200 rounded py-0.5 text-xs font-semibold"
+                          />
+                          <span className="text-[10px] text-slate-400">({row.standsCount})</span>
+                        </div>
+                      </td>
+
+                      {/* Theoretical Volume */}
+                      <td className="py-2.5 px-3 text-right bg-blue-50/30 font-bold text-blue-900 font-mono text-sm">
+                        {row.theoM3.toFixed(3)}
+                      </td>
+
+                      {/* TT Start */}
+                      <td className="py-2.5 px-3 text-center bg-slate-50/50">
+                        <input 
+                          type="number" 
+                          step="0.01"
+                          value={row.startTT}
+                          onChange={e => handleUpdateRow(row.id, 'startTT', Number(e.target.value))}
+                          className="w-20 text-center font-mono font-medium bg-white border border-slate-300 rounded px-1.5 py-1 text-xs"
+                        />
+                      </td>
+
+                      {/* TT End */}
+                      <td className="py-2.5 px-3 text-center bg-slate-50/50">
+                        <input 
+                          type="number" 
+                          step="0.01"
+                          value={row.endTT}
+                          onChange={e => handleUpdateRow(row.id, 'endTT', Number(e.target.value))}
+                          className="w-20 text-center font-mono font-bold bg-white border border-slate-300 rounded px-1.5 py-1 text-xs text-blue-950 focus:border-blue-500"
+                        />
+                      </td>
+
+                      {/* Real Volume */}
+                      <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900 text-sm bg-slate-50/30">
+                        {row.realM3.toFixed(3)}
+                      </td>
+
+                      {/* Difference */}
+                      <td className={`py-2.5 px-3 text-right font-mono font-bold text-sm ${
+                        row.status === 'kick' 
+                          ? 'text-red-600 bg-red-50/50' 
+                          : row.status === 'loss' 
+                          ? 'text-amber-600 bg-amber-50/50' 
+                          : 'text-emerald-700'
+                      }`}>
+                        {row.diffM3 > 0 ? `+${row.diffM3.toFixed(3)}` : row.diffM3.toFixed(3)}
+                      </td>
+
+                      {/* Cumulative Difference */}
+                      <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-800 bg-slate-100/50">
+                        {row.cumDiffM3 > 0 ? `+${row.cumDiffM3.toFixed(3)}` : row.cumDiffM3.toFixed(3)}
+                      </td>
+
+                      {/* Status Badge */}
+                      <td className="py-2.5 px-3 text-center">
+                        {row.status === 'normal' && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            مطابق
+                          </span>
+                        )}
+                        {row.status === 'kick' && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-800 animate-pulse">
+                            <AlertTriangle className="w-3 h-3 text-red-600" />
+                            KICK !
+                          </span>
+                        )}
+                        {row.status === 'loss' && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
+                            <AlertTriangle className="w-3 h-3 text-amber-600" />
+                            LOSS !
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Delete Action */}
+                      <td className="py-2.5 px-2 text-center">
+                        <button 
+                          onClick={() => handleDeleteRow(row.id)}
+                          className="text-slate-300 hover:text-red-500 p-1 transition"
+                          title="حذف الصف"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+
+              {/* Table Footer / Totals */}
+              <tfoot>
+                <tr className="bg-slate-200/80 font-bold text-slate-900 border-t-2 border-slate-300">
+                  <td colSpan={2} className="py-3 px-3 text-right">
+                    المجموع الكلي (Total):
+                  </td>
+                  <td className="py-3 px-3 text-center font-mono">
+                    {summary.totalStands} std
+                  </td>
+                  <td className="py-3 px-3 text-right font-mono text-blue-900">
+                    {summary.totalTheo.toFixed(3)} m³
+                  </td>
+                  <td colSpan={2} className="py-3 px-3 text-center text-slate-500 text-xs font-normal">
+                    (تراكمي الرحلة)
+                  </td>
+                  <td className="py-3 px-3 text-right font-mono text-slate-900">
+                    {summary.totalReal.toFixed(3)} m³
+                  </td>
+                  <td colSpan={2} className={`py-3 px-3 text-right font-mono text-sm ${
+                    summary.totalDiff > 0.2 ? 'text-amber-700' : summary.totalDiff < -0.2 ? 'text-red-700' : 'text-emerald-700'
+                  }`}>
+                    الفارق الكلي: {summary.totalDiff > 0 ? `+${summary.totalDiff.toFixed(3)}` : summary.totalDiff.toFixed(3)} m³
+                  </td>
+                  <td colSpan={2} className="py-3 px-3 text-center">
+                    <button
+                      onClick={() => window.print()}
+                      className="bg-slate-700 hover:bg-slate-800 text-white text-[11px] font-medium px-2.5 py-1 rounded shadow-sm inline-flex items-center gap-1"
+                    >
+                      <FileSpreadsheet className="w-3 h-3" />
+                      طباعة
+                    </button>
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </section>
+
       </div>
-
-      {/* Printable Sheet (Visible only on window.print()) */}
-      <PrintSheet
-        header={header}
-        rows={rows}
-        activeTubulars={tubulars}
-      />
-
-      {/* Modals */}
-      <TripSetup
-        isOpen={isSetupOpen}
-        onClose={() => setIsSetupOpen(false)}
-        header={header}
-        onSave={(updated) => {
-          setHeader(updated);
-          setRows(recalculateAllRows(rows, updated.initialTripTankVolume, updated.warningThresholdM3, updated.criticalThresholdM3));
-        }}
-      />
-
-      <StringComposer
-        isOpen={isStringComposerOpen}
-        onClose={() => setIsStringComposerOpen(false)}
-        sections={stringSections}
-        tubulars={tubulars}
-        standLength={header.standLength}
-        onSave={setStringSections}
-      />
-
-      <TubularCatalogModal
-        isOpen={isTubularCatalogOpen}
-        onClose={() => setIsTubularCatalogOpen(false)}
-        tubulars={tubulars}
-        onAddTubular={(tub) => setTubulars([...tubulars, tub])}
-      />
-
     </div>
   );
 }
